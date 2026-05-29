@@ -12,7 +12,10 @@ from compose_farm.cli import lifecycle
 from compose_farm.config import Config, Host
 from compose_farm.executor import CommandResult
 from compose_farm.operations import (
+    PreflightResult,
     _migrate_stack,
+    _stop_stacks_on_hosts,
+    _up_stack_simple,
     build_discovery_results,
     build_up_cmd,
 )
@@ -95,6 +98,101 @@ class TestMigrationCommands:
         build_idx = commands_called.index("build")
         assert pull_idx < build_idx
 
+    async def test_migration_dispatches_hooks_in_order(self, config: Config) -> None:
+        """Migration dispatches lifecycle hooks in the expected order."""
+        events_called: list[str] = []
+
+        async def mock_dispatch_hook(
+            cfg: Config,
+            event: object,
+            stack: str,
+            *,
+            source_host: str | None = None,
+            target_host: str | None = None,
+            metadata: dict[str, str] | None = None,
+        ) -> None:
+            _ = (cfg, stack, source_host, target_host, metadata)
+            events_called.append(str(event))
+
+        async def mock_run_compose_step(
+            cfg: Config,
+            stack: str,
+            command: str,
+            *,
+            raw: bool,
+            host: str | None = None,
+        ) -> CommandResult:
+            _ = (cfg, stack, command, raw, host)
+            return CommandResult(stack="test-service", exit_code=0, success=True)
+
+        with (
+            patch("compose_farm.operations._dispatch_hook", side_effect=mock_dispatch_hook),
+            patch("compose_farm.operations._run_compose_step", side_effect=mock_run_compose_step),
+        ):
+            result = await _migrate_stack(
+                config,
+                "test-service",
+                current_host="host1",
+                target_host="host2",
+                prefix="[test]",
+                raw=False,
+            )
+
+        assert result is None
+        assert events_called == [
+            "pre_migrate",
+            "pre_stop_source",
+            "post_stop_source",
+            "pre_start_target",
+        ]
+
+    async def test_migration_dispatches_failure_hook_on_failed_down(self, config: Config) -> None:
+        """Failed down step dispatches migrate_failed hook."""
+        events_called: list[str] = []
+
+        async def mock_dispatch_hook(
+            cfg: Config,
+            event: object,
+            stack: str,
+            *,
+            source_host: str | None = None,
+            target_host: str | None = None,
+            metadata: dict[str, str] | None = None,
+        ) -> None:
+            _ = (cfg, stack, source_host, target_host, metadata)
+            events_called.append(str(event))
+
+        async def mock_run_compose_step(
+            cfg: Config,
+            stack: str,
+            command: str,
+            *,
+            raw: bool,
+            host: str | None = None,
+        ) -> CommandResult:
+            _ = (cfg, stack, raw, host)
+            return CommandResult(
+                stack="test-service",
+                exit_code=1 if command == "down" else 0,
+                success=command != "down",
+            )
+
+        with (
+            patch("compose_farm.operations._dispatch_hook", side_effect=mock_dispatch_hook),
+            patch("compose_farm.operations._run_compose_step", side_effect=mock_run_compose_step),
+        ):
+            result = await _migrate_stack(
+                config,
+                "test-service",
+                current_host="host1",
+                target_host="host2",
+                prefix="[test]",
+                raw=False,
+            )
+
+        assert result is not None
+        assert events_called[-1] == "migrate_failed"
+
 
 class TestBuildUpCmd:
     """Tests for build_up_cmd helper."""
@@ -124,6 +222,74 @@ class TestBuildUpCmd:
         assert (
             build_up_cmd(pull=True, build=True, service="web") == "up -d --pull always --build web"
         )
+
+
+class TestLifecycleHooks:
+    """Tests for non-migration hook dispatch in operations."""
+
+    async def test_up_stack_simple_dispatches_hooks(self, basic_config: Config) -> None:
+        """Simple up emits pre_up and post_up on success."""
+        events_called: list[str] = []
+
+        async def mock_dispatch_hook(
+            cfg: Config,
+            event: object,
+            stack: str,
+            *,
+            source_host: str | None = None,
+            target_host: str | None = None,
+            metadata: dict[str, str] | None = None,
+        ) -> None:
+            _ = (cfg, stack, source_host, target_host, metadata)
+            events_called.append(str(event))
+
+        with (
+            patch("compose_farm.operations._dispatch_hook", side_effect=mock_dispatch_hook),
+            patch(
+                "compose_farm.operations.check_stack_requirements",
+                return_value=PreflightResult([], [], []),
+            ),
+            patch(
+                "compose_farm.operations.run_compose",
+                return_value=CommandResult(stack="test-service", exit_code=0, success=True),
+            ),
+        ):
+            result = await _up_stack_simple(basic_config, "test-service", raw=False)
+
+        assert result.success
+        assert events_called == ["pre_up", "post_up"]
+
+    async def test_stop_stacks_dispatches_down_hooks(self, basic_config: Config) -> None:
+        """Stopping stacks emits pre_down and post_down hooks."""
+        events_called: list[str] = []
+
+        async def mock_dispatch_hook(
+            cfg: Config,
+            event: object,
+            stack: str,
+            *,
+            source_host: str | None = None,
+            target_host: str | None = None,
+            metadata: dict[str, str] | None = None,
+        ) -> None:
+            _ = (cfg, stack, source_host, target_host, metadata)
+            events_called.append(str(event))
+
+        with (
+            patch("compose_farm.operations._dispatch_hook", side_effect=mock_dispatch_hook),
+            patch(
+                "compose_farm.operations.run_compose_on_host",
+                return_value=CommandResult(stack="test-service@host2", exit_code=0, success=True),
+            ),
+        ):
+            results = await _stop_stacks_on_hosts(
+                basic_config,
+                {"test-service": ["host2"]},
+            )
+
+        assert len(results) == 1
+        assert results[0].success
+        assert events_called == ["pre_down", "post_down"]
 
 
 class TestUpdateCommandSequence:
