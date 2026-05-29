@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from collections import defaultdict
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.metadata import entry_points
 from typing import TYPE_CHECKING
 
@@ -62,6 +62,7 @@ class HookManager:
             return cls.empty()
 
         discovered = _discover_plugins(enabled=cfg.plugins)
+        discovered = _apply_policy_overrides(discovered, cfg)
         return cls(plugins=discovered)
 
     async def dispatch(self, context: HookContext) -> list[HookResult]:
@@ -177,3 +178,36 @@ def _load_plugin(ep: EntryPoint) -> HookPlugin:
 
     hooks = tuple(register_hooks())
     return HookPlugin(name=ep.name, hooks=hooks)
+
+
+def _apply_policy_overrides(plugins: list[HookPlugin], cfg: Config) -> list[HookPlugin]:
+    """Apply policy overrides from config.plugin_config to plugin hooks."""
+    updated: list[HookPlugin] = []
+
+    for plugin in plugins:
+        policy_overrides = cfg.get_plugin_config(plugin.name).get("policies", {})
+        if not isinstance(policy_overrides, dict):
+            msg = f"Plugin {plugin.name!r} config.policies must be a mapping"
+            raise HookExecutionError(msg)
+
+        hooks: list[HookRegistration] = []
+        for hook in plugin.hooks:
+            override_raw = policy_overrides.get(hook.hook)
+            if override_raw is None:
+                hooks.append(hook)
+                continue
+
+            try:
+                override_policy = HookPolicy(str(override_raw))
+            except ValueError as exc:
+                msg = (
+                    f"Invalid policy override for {plugin.name}:{hook.hook}: "
+                    f"{override_raw!r}"
+                )
+                raise HookExecutionError(msg) from exc
+
+            hooks.append(replace(hook, policy=override_policy))
+
+        updated.append(HookPlugin(name=plugin.name, hooks=tuple(hooks)))
+
+    return updated
