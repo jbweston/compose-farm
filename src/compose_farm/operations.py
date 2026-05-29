@@ -269,9 +269,22 @@ async def _up_multi_host_stack(
 
     # Pre-flight checks on all hosts
     for host_name in host_names:
+        await _dispatch_hook(
+            cfg,
+            HookEvent.PRE_UP,
+            stack,
+            target_host=host_name,
+        )
         preflight = await check_stack_requirements(cfg, stack, host_name)
         if not preflight.ok:
             _report_preflight_failures(stack, host_name, preflight)
+            await _dispatch_hook(
+                cfg,
+                HookEvent.UP_FAILED,
+                stack,
+                target_host=host_name,
+                metadata={"step": "preflight"},
+            )
             results.append(CommandResult(stack=f"{stack}@{host_name}", exit_code=1, success=False))
             return results
 
@@ -289,6 +302,20 @@ async def _up_multi_host_stack(
         results.append(result)
         if result.success:
             succeeded_hosts.append(host_name)
+            await _dispatch_hook(
+                cfg,
+                HookEvent.POST_UP,
+                stack,
+                target_host=host_name,
+            )
+        else:
+            await _dispatch_hook(
+                cfg,
+                HookEvent.UP_FAILED,
+                stack,
+                target_host=host_name,
+                metadata={"step": "compose_up"},
+            )
 
     # Update state with hosts that succeeded (partial success is tracked)
     if succeeded_hosts:
@@ -392,10 +419,26 @@ async def _up_single_stack(
     target_host = cfg.get_hosts(stack)[0]
     current_host = get_stack_host(cfg, stack)
 
+    await _dispatch_hook(
+        cfg,
+        HookEvent.PRE_UP,
+        stack,
+        source_host=current_host,
+        target_host=target_host,
+    )
+
     # Pre-flight check: verify paths, networks, and devices exist on target
     preflight = await check_stack_requirements(cfg, stack, target_host)
     if not preflight.ok:
         _report_preflight_failures(stack, target_host, preflight)
+        await _dispatch_hook(
+            cfg,
+            HookEvent.UP_FAILED,
+            stack,
+            source_host=current_host,
+            target_host=target_host,
+            metadata={"step": "preflight"},
+        )
         return CommandResult(stack=stack, exit_code=1, success=False)
 
     # If stack is deployed elsewhere, migrate it
@@ -420,6 +463,13 @@ async def _up_single_stack(
     # Update state on success, or rollback on failure
     if up_result.success:
         set_stack_host(cfg, stack, target_host)
+        await _dispatch_hook(
+            cfg,
+            HookEvent.POST_UP,
+            stack,
+            source_host=current_host,
+            target_host=target_host,
+        )
         if did_migration and current_host:
             await _dispatch_hook(
                 cfg,
@@ -429,6 +479,14 @@ async def _up_single_stack(
                 target_host=target_host,
             )
     elif did_migration and current_host:
+        await _dispatch_hook(
+            cfg,
+            HookEvent.UP_FAILED,
+            stack,
+            source_host=current_host,
+            target_host=target_host,
+            metadata={"step": "compose_up"},
+        )
         await _cleanup_and_rollback(
             cfg,
             stack,
@@ -453,10 +511,24 @@ async def _up_stack_simple(
     """Start a single-host stack without migration (parallel-safe)."""
     target_host = cfg.get_hosts(stack)[0]
 
+    await _dispatch_hook(
+        cfg,
+        HookEvent.PRE_UP,
+        stack,
+        target_host=target_host,
+    )
+
     # Pre-flight check
     preflight = await check_stack_requirements(cfg, stack, target_host)
     if not preflight.ok:
         _report_preflight_failures(stack, target_host, preflight)
+        await _dispatch_hook(
+            cfg,
+            HookEvent.UP_FAILED,
+            stack,
+            target_host=target_host,
+            metadata={"step": "preflight"},
+        )
         return CommandResult(stack=stack, exit_code=1, success=False)
 
     # Run with streaming for parallel output
@@ -469,6 +541,20 @@ async def _up_stack_simple(
     # Update state on success
     if result.success:
         set_stack_host(cfg, stack, target_host)
+        await _dispatch_hook(
+            cfg,
+            HookEvent.POST_UP,
+            stack,
+            target_host=target_host,
+        )
+    else:
+        await _dispatch_hook(
+            cfg,
+            HookEvent.UP_FAILED,
+            stack,
+            target_host=target_host,
+            metadata={"step": "compose_up"},
+        )
 
     return result
 
@@ -608,6 +694,25 @@ async def _stop_stacks_on_hosts(
                     )
                 )
                 continue
+            try:
+                await _dispatch_hook(
+                    cfg,
+                    HookEvent.PRE_DOWN,
+                    stack,
+                    target_host=host,
+                )
+            except HookExecutionError as exc:
+                print_error(f"{stack}@{host}: {exc}")
+                results.append(
+                    CommandResult(
+                        stack=f"{stack}@{host}",
+                        exit_code=1,
+                        success=False,
+                        stderr=str(exc),
+                    )
+                )
+                continue
+
             coro = run_compose_on_host(cfg, stack, host, "down")
             tasks.append((stack, host, asyncio.create_task(coro)))
 
@@ -617,10 +722,30 @@ async def _stop_stacks_on_hosts(
             results.append(result)
             if result.success:
                 print_success(f"{stack}@{host}: stopped{suffix}")
+                await _dispatch_hook(
+                    cfg,
+                    HookEvent.POST_DOWN,
+                    stack,
+                    target_host=host,
+                )
             else:
                 print_error(f"{stack}@{host}: {result.stderr or 'failed'}")
+                await _dispatch_hook(
+                    cfg,
+                    HookEvent.DOWN_FAILED,
+                    stack,
+                    target_host=host,
+                    metadata={"step": "compose_down"},
+                )
         except Exception as e:
             print_error(f"{stack}@{host}: {e}")
+            await _dispatch_hook(
+                cfg,
+                HookEvent.DOWN_FAILED,
+                stack,
+                target_host=host,
+                metadata={"step": "exception"},
+            )
             results.append(
                 CommandResult(
                     stack=f"{stack}@{host}",
