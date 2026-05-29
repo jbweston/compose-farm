@@ -103,6 +103,10 @@ class Config(BaseModel, extra="forbid"):
         """Get stack directory path."""
         return self.compose_dir / stack
 
+    def is_plugin_enabled(self, plugin_name: str) -> bool:
+        """Return True when a plugin is explicitly enabled."""
+        return plugin_name in self.plugins
+
     def get_compose_path(self, stack: str) -> Path:
         """Get compose file path for a stack (tries compose.yaml first).
 

@@ -64,6 +64,17 @@ class TestConfig:
         assert config.get_plugin_config("lab") == {"mode": "fast"}
         assert config.get_plugin_config("missing") == {}
 
+    def test_is_plugin_enabled(self) -> None:
+        """Plugin activation can be checked uniformly."""
+        config = Config(
+            compose_dir=Path("/opt/compose"),
+            hosts={"nas01": Host(address="192.168.1.10")},
+            stacks={"plex": "nas01"},
+            plugins=["sync", "lab"],
+        )
+        assert config.is_plugin_enabled("sync") is True
+        assert config.is_plugin_enabled("missing") is False
+
     def test_config_invalid_stack_host(self) -> None:
         with pytest.raises(ValueError, match="unknown host"):
             Config(
