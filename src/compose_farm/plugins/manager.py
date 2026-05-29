@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import inspect
 from collections import defaultdict
-from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from importlib.metadata import entry_points
 from typing import TYPE_CHECKING
@@ -14,6 +13,7 @@ from compose_farm.console import print_warning
 from .types import HookContext, HookEvent, HookPolicy, HookRegistration, HookResult
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from importlib.metadata import EntryPoint
 
     from compose_farm.config import Config
@@ -38,6 +38,7 @@ class HookManager:
     """Loads plugins and dispatches lifecycle hooks."""
 
     def __init__(self, plugins: Iterable[HookPlugin]) -> None:
+        """Initialize manager with loaded plugins."""
         self._plugins = tuple(plugins)
         by_event: dict[HookEvent, list[HookRegistration]] = defaultdict(list)
         for plugin in self._plugins:
@@ -73,23 +74,17 @@ class HookManager:
         for registration in hooks:
             try:
                 maybe_result = registration.handler(context)
-                result = (
+                raw_result = (
                     await maybe_result if inspect.isawaitable(maybe_result) else maybe_result
                 )
-                if result is None:
-                    result = HookResult(
-                        plugin=registration.plugin,
-                        hook=registration.hook,
-                        event=context.event,
-                        success=True,
-                    )
+                result = _coerce_hook_result(raw_result, registration, context)
 
                 if not result.success and registration.policy == HookPolicy.BLOCKING:
                     msg = (
                         f"Hook failed: {registration.plugin}:{registration.hook} "
                         f"({context.event.value})"
                     )
-                    raise HookExecutionError(msg)
+                    _raise_hook_error(msg)
 
                 if not result.success:
                     print_warning(
@@ -200,10 +195,7 @@ def _apply_policy_overrides(plugins: list[HookPlugin], cfg: Config) -> list[Hook
             try:
                 override_policy = HookPolicy(str(override_raw))
             except ValueError as exc:
-                msg = (
-                    f"Invalid policy override for {plugin.name}:{hook.hook}: "
-                    f"{override_raw!r}"
-                )
+                msg = f"Invalid policy override for {plugin.name}:{hook.hook}: {override_raw!r}"
                 raise HookExecutionError(msg) from exc
 
             hooks.append(replace(hook, policy=override_policy))
@@ -211,3 +203,31 @@ def _apply_policy_overrides(plugins: list[HookPlugin], cfg: Config) -> list[Hook
         updated.append(HookPlugin(name=plugin.name, hooks=tuple(hooks)))
 
     return updated
+
+
+def _coerce_hook_result(
+    raw_result: object,
+    registration: HookRegistration,
+    context: HookContext,
+) -> HookResult:
+    """Normalize plugin hook return values to HookResult."""
+    if raw_result is None:
+        return HookResult(
+            plugin=registration.plugin,
+            hook=registration.hook,
+            event=context.event,
+            success=True,
+        )
+    if isinstance(raw_result, HookResult):
+        return raw_result
+
+    msg = (
+        f"Hook {registration.plugin}:{registration.hook} "
+        f"returned invalid type: {type(raw_result).__name__}"
+    )
+    raise HookExecutionError(msg)
+
+
+def _raise_hook_error(message: str) -> None:
+    """Raise a normalized hook execution error."""
+    raise HookExecutionError(message)

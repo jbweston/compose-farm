@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -20,7 +21,7 @@ from compose_farm.plugins.manager import HookPlugin
 
 
 @pytest.fixture
-def cfg(tmp_path) -> Config:  # type: ignore[no-untyped-def]
+def cfg(tmp_path: Path) -> Config:
     """Build a minimal config for hook context tests."""
     return Config(
         compose_dir=tmp_path,
@@ -83,7 +84,9 @@ async def test_warn_hook_failure_continues(cfg: Config) -> None:
         ]
     )
 
-    results = await manager.dispatch(HookContext(event=HookEvent.PRE_MIGRATE, stack="svc", config=cfg))
+    results = await manager.dispatch(
+        HookContext(event=HookEvent.PRE_MIGRATE, stack="svc", config=cfg)
+    )
     assert len(results) == 1
     assert results[0].success is False
 
@@ -118,7 +121,7 @@ async def test_async_hook_handler_supported(cfg: Config) -> None:
     assert results[0].success is True
 
 
-def test_from_config_applies_policy_override(tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_from_config_applies_policy_override(tmp_path: Path) -> None:
     """Config policy override updates hook policy."""
     cfg = Config(
         compose_dir=tmp_path,
@@ -157,7 +160,7 @@ def test_from_config_applies_policy_override(tmp_path) -> None:  # type: ignore[
     assert hooks[0].policy == HookPolicy.WARN
 
 
-def test_from_config_rejects_invalid_policy_override(tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_from_config_rejects_invalid_policy_override(tmp_path: Path) -> None:
     """Invalid policy override raises HookExecutionError."""
     cfg = Config(
         compose_dir=tmp_path,
@@ -188,6 +191,8 @@ def test_from_config_rejects_invalid_policy_override(tmp_path) -> None:  # type:
         ),
     )
 
-    with patch("compose_farm.plugins.manager._discover_plugins", return_value=[plugin]):
-        with pytest.raises(HookExecutionError):
-            HookManager.from_config(cfg)
+    with (
+        patch("compose_farm.plugins.manager._discover_plugins", return_value=[plugin]),
+        pytest.raises(HookExecutionError),
+    ):
+        HookManager.from_config(cfg)

@@ -80,7 +80,10 @@ class TestApplyCommand:
             events.append(str(event))
 
         with (
-            patch("compose_farm.cli.lifecycle._dispatch_apply_hook", side_effect=mock_dispatch_apply_hook),
+            patch(
+                "compose_farm.cli.lifecycle._dispatch_apply_hook",
+                side_effect=mock_dispatch_apply_hook,
+            ),
             patch("compose_farm.cli.lifecycle.load_config_or_exit", return_value=cfg),
             patch("compose_farm.cli.lifecycle.get_orphaned_stacks", return_value={}),
             patch("compose_farm.cli.lifecycle.get_stacks_needing_migration", return_value=[]),
@@ -104,14 +107,18 @@ class TestApplyCommand:
         ) -> None:
             _ = (cfg, dry_run, metadata)
             if str(event) == "pre_apply":
-                raise HookExecutionError("boom")
+                message = "boom"
+                raise HookExecutionError(message)
 
         with (
-            patch("compose_farm.cli.lifecycle._dispatch_apply_hook", side_effect=mock_dispatch_apply_hook),
+            patch(
+                "compose_farm.cli.lifecycle._dispatch_apply_hook",
+                side_effect=mock_dispatch_apply_hook,
+            ),
             patch("compose_farm.cli.lifecycle.load_config_or_exit", return_value=cfg),
+            pytest.raises(typer.Exit) as exc,
         ):
-            with pytest.raises(typer.Exit) as exc:
-                apply(dry_run=False, no_orphans=False, no_strays=False, full=False, config=None)
+            apply(dry_run=False, no_orphans=False, no_strays=False, full=False, config=None)
 
         assert exc.value.exit_code == 1
 

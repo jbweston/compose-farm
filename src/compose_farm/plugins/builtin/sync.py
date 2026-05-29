@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
-from compose_farm.config import Host
 from compose_farm.plugins.types import (
     HookContext,
     HookEvent,
@@ -16,8 +15,12 @@ from compose_farm.plugins.types import (
     HookResult,
 )
 
+if TYPE_CHECKING:
+    from compose_farm.config import Host
+
 _PLUGIN_NAME = "sync"
 _DEFAULT_EVENTS = frozenset({HookEvent.PRE_UP.value, HookEvent.PRE_APPLY.value})
+_DEFAULT_SSH_PORT = 22
 
 
 class SyncPlugin:
@@ -34,7 +37,7 @@ class SyncPlugin:
         rsync_flags: ["-az"]
     """
 
-    def register_hooks(self) -> Iterable[HookRegistration]:
+    def register_hooks(self) -> list[HookRegistration]:
         """Register one handler per event; handler no-ops if event is disabled."""
         return [
             HookRegistration(
@@ -47,7 +50,7 @@ class SyncPlugin:
             for event in HookEvent
         ]
 
-    def _handle_event(self, context: HookContext) -> HookResult:
+    def _handle_event(self, context: HookContext) -> HookResult:  # noqa: PLR0911
         """Sync configured source tree for selected stacks/hosts."""
         plugin_cfg = context.config.get_plugin_config(_PLUGIN_NAME)
         enabled_events = _event_set(plugin_cfg)
@@ -166,14 +169,14 @@ def _event_set(plugin_cfg: dict[str, object]) -> set[str]:
         return set(_DEFAULT_EVENTS)
     if not isinstance(configured, list) or not all(isinstance(item, str) for item in configured):
         return set()
-    return set(configured)
+    return set(cast("list[str]", configured))
 
 
 def _rsync_flags(plugin_cfg: dict[str, object]) -> list[str]:
     """Get rsync flags from plugin config with defaults."""
     flags = plugin_cfg.get("rsync_flags")
     if isinstance(flags, list) and all(isinstance(item, str) for item in flags):
-        return list(flags)
+        return list(cast("list[str]", flags))
     return ["-az"]
 
 
@@ -181,7 +184,7 @@ def _excludes(plugin_cfg: dict[str, object]) -> list[str]:
     """Get rsync exclude patterns from plugin config."""
     excludes = plugin_cfg.get("excludes")
     if isinstance(excludes, list) and all(isinstance(item, str) for item in excludes):
-        return list(excludes)
+        return list(cast("list[str]", excludes))
     return []
 
 
@@ -193,7 +196,9 @@ def _targets_for_context(context: HookContext) -> list[tuple[str, str]]:
         if context.target_host:
             targets.append((context.stack, context.target_host))
         else:
-            targets.extend((context.stack, host) for host in context.config.get_hosts(context.stack))
+            targets.extend(
+                (context.stack, host) for host in context.config.get_hosts(context.stack)
+            )
     elif context.event == HookEvent.PRE_APPLY:
         for stack in context.config.stacks:
             targets.extend((stack, host) for host in context.config.get_hosts(stack))
@@ -217,7 +222,7 @@ def _ensure_destination_dir(host: Host, dest_dir: str, *, dry_run: bool) -> bool
         return True
 
     command = ["ssh"]
-    if host.port != 22:
+    if host.port != _DEFAULT_SSH_PORT:
         command.extend(["-p", str(host.port)])
     command.append(f"{host.user}@{host.address}")
     command.append(f"mkdir -p {dest_dir!r}")
@@ -252,7 +257,7 @@ def _run_rsync(
     else:
         target = f"{host.user}@{host.address}:{dest_dir}/"
         destination = target
-        if host.port != 22:
+        if host.port != _DEFAULT_SSH_PORT:
             args.extend(["-e", f"ssh -p {host.port}"])
 
     args.extend([source, destination])

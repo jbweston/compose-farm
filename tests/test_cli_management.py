@@ -62,9 +62,9 @@ class TestPluginsCommand:
                 "compose_farm.cli.management.HookManager.from_config",
                 side_effect=HookExecutionError("Configured plugin(s) not found"),
             ),
+            pytest.raises(typer.Exit) as exc,
         ):
-            with pytest.raises(typer.Exit) as exc:
-                plugins(config=None)
+            plugins(config=None)
 
         assert exc.value.exit_code == 1
 

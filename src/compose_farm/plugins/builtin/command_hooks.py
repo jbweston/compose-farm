@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Iterable
 from typing import Any
 
 from compose_farm.plugins.types import (
@@ -38,7 +37,7 @@ class CommandHooksPlugin:
     - {dry_run}
     """
 
-    def register_hooks(self) -> Iterable[HookRegistration]:
+    def register_hooks(self) -> list[HookRegistration]:
         """Register one handler per event; handler no-ops if event has no commands."""
         return [
             HookRegistration(
@@ -102,8 +101,7 @@ class CommandHooksPlugin:
                 continue
 
             completed = subprocess.run(
-                rendered_command,
-                shell=True,
+                ["/bin/sh", "-lc", rendered_command],
                 check=False,
                 capture_output=True,
                 text=True,

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 from compose_farm.config import Config, Host
-from compose_farm.plugins import HookContext, HookEvent
+from compose_farm.plugins import HookContext, HookEvent, HookResult
 from compose_farm.plugins.builtin.command_hooks import CommandHooksPlugin
 
 
@@ -24,18 +25,20 @@ def _make_config(tmp_path: Path, hooks: dict[str, list[str]] | None = None) -> C
 def _handler_for_event(
     plugin: CommandHooksPlugin,
     event: HookEvent,
-) -> Callable[[HookContext], object]:
+) -> Callable[[HookContext], HookResult | None]:
     """Return registered handler for a specific event."""
     for registration in plugin.register_hooks():
         if registration.event == event:
-            return registration.handler
+            return cast("Callable[[HookContext], HookResult | None]", registration.handler)
     msg = f"No handler for event {event.value}"
     raise AssertionError(msg)
 
 
 def test_command_hooks_dry_run_renders_commands(tmp_path: Path) -> None:
     """Dry-run mode renders commands without executing."""
-    cfg = _make_config(tmp_path, hooks={"pre_migrate": ["echo {stack}:{source_host}->{target_host}"]})
+    cfg = _make_config(
+        tmp_path, hooks={"pre_migrate": ["echo {stack}:{source_host}->{target_host}"]}
+    )
     plugin = CommandHooksPlugin()
     handler = _handler_for_event(plugin, HookEvent.PRE_MIGRATE)
 

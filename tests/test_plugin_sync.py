@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 from compose_farm.config import Config, Host
-from compose_farm.plugins import HookContext, HookEvent
+from compose_farm.plugins import HookContext, HookEvent, HookResult
 from compose_farm.plugins.builtin.sync import SyncPlugin
 
 
@@ -38,11 +40,13 @@ def _make_cfg(tmp_path: Path) -> Config:
     )
 
 
-def _handler(plugin: SyncPlugin):
+def _handler(
+    plugin: SyncPlugin,
+) -> Callable[[HookContext], HookResult | None]:
     """Get sync-tree handler from plugin registrations."""
     for registration in plugin.register_hooks():
         if registration.hook == "sync-tree":
-            return registration.handler
+            return cast("Callable[[HookContext], HookResult | None]", registration.handler)
     msg = "sync-tree hook not registered"
     raise AssertionError(msg)
 
