@@ -126,6 +126,24 @@ class HookManager:
 
         return results
 
+    @property
+    def plugin_names(self) -> tuple[str, ...]:
+        """Loaded plugin names in dispatch order."""
+        return tuple(plugin.name for plugin in self._plugins)
+
+    def hook_registrations(self) -> tuple[HookRegistration, ...]:
+        """All registered hooks across plugins."""
+        hooks: list[HookRegistration] = []
+        for plugin in self._plugins:
+            hooks.extend(plugin.hooks)
+        return tuple(hooks)
+
+
+def list_available_plugins() -> list[str]:
+    """List plugin names discoverable from entry points."""
+    eps = entry_points(group=ENTRYPOINT_GROUP)
+    return sorted(ep.name for ep in eps)
+
 
 def _discover_plugins(*, enabled: list[str]) -> list[HookPlugin]:
     """Discover and load plugins from Python entry points."""
