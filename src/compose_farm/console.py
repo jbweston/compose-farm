@@ -27,6 +27,19 @@ class _LazyConsole:
         """Proxy print calls to the underlying Rich console."""
         self._get().print(*args, **kwargs)
 
+    def __enter__(self) -> Any:
+        """Support Rich's context-manager usage in Live/Progress rendering."""
+        return self._get().__enter__()
+
+    def __exit__(
+        self,
+        exc_type: object,
+        exc: object,
+        tb: object,
+    ) -> Any:
+        """Support Rich's context-manager usage in Live/Progress rendering."""
+        return self._get().__exit__(exc_type, exc, tb)
+
     def __getattr__(self, name: str) -> Any:
         return getattr(self._get(), name)
 
