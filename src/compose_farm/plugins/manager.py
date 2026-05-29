@@ -1,0 +1,161 @@
+"""Plugin loading and lifecycle hook dispatch."""
+
+from __future__ import annotations
+
+import inspect
+from collections import defaultdict
+from collections.abc import Iterable
+from dataclasses import dataclass
+from importlib.metadata import entry_points
+from typing import TYPE_CHECKING
+
+from compose_farm.console import print_warning
+
+from .types import HookContext, HookEvent, HookPolicy, HookRegistration, HookResult
+
+if TYPE_CHECKING:
+    from importlib.metadata import EntryPoint
+
+    from compose_farm.config import Config
+
+
+ENTRYPOINT_GROUP = "compose_farm.plugins"
+
+
+class HookExecutionError(RuntimeError):
+    """Raised when a blocking hook fails."""
+
+
+@dataclass(frozen=True)
+class HookPlugin:
+    """Loaded plugin plus its hook registrations."""
+
+    name: str
+    hooks: tuple[HookRegistration, ...]
+
+
+class HookManager:
+    """Loads plugins and dispatches lifecycle hooks."""
+
+    def __init__(self, plugins: Iterable[HookPlugin]) -> None:
+        self._plugins = tuple(plugins)
+        by_event: dict[HookEvent, list[HookRegistration]] = defaultdict(list)
+        for plugin in self._plugins:
+            for hook in plugin.hooks:
+                by_event[hook.event].append(hook)
+        self._by_event = {event: tuple(hooks) for event, hooks in by_event.items()}
+
+    @classmethod
+    def empty(cls) -> HookManager:
+        """Build a manager with no registered plugins."""
+        return cls(plugins=[])
+
+    @classmethod
+    def from_registrations(cls, hooks: Iterable[HookRegistration]) -> HookManager:
+        """Build a manager from direct registrations (used in tests)."""
+        return cls(plugins=[HookPlugin(name="test", hooks=tuple(hooks))])
+
+    @classmethod
+    def from_config(cls, cfg: Config) -> HookManager:
+        """Build a manager from config and installed entry-point plugins."""
+        if not cfg.plugins:
+            return cls.empty()
+
+        discovered = _discover_plugins(enabled=cfg.plugins)
+        return cls(plugins=discovered)
+
+    async def dispatch(self, context: HookContext) -> list[HookResult]:
+        """Dispatch a lifecycle event to registered hooks."""
+        hooks = self._by_event.get(context.event, ())
+        results: list[HookResult] = []
+
+        for registration in hooks:
+            try:
+                maybe_result = registration.handler(context)
+                result = (
+                    await maybe_result if inspect.isawaitable(maybe_result) else maybe_result
+                )
+                if result is None:
+                    result = HookResult(
+                        plugin=registration.plugin,
+                        hook=registration.hook,
+                        event=context.event,
+                        success=True,
+                    )
+
+                if not result.success and registration.policy == HookPolicy.BLOCKING:
+                    msg = (
+                        f"Hook failed: {registration.plugin}:{registration.hook} "
+                        f"({context.event.value})"
+                    )
+                    raise HookExecutionError(msg)
+
+                if not result.success:
+                    print_warning(
+                        "Hook warning: "
+                        f"{registration.plugin}:{registration.hook} "
+                        f"({context.event.value})"
+                    )
+
+                results.append(result)
+
+            except HookExecutionError:
+                raise
+            except Exception as exc:
+                if registration.policy == HookPolicy.BLOCKING:
+                    msg = (
+                        f"Hook crashed: {registration.plugin}:{registration.hook} "
+                        f"({context.event.value}): {exc}"
+                    )
+                    raise HookExecutionError(msg) from exc
+
+                print_warning(
+                    "Hook warning: "
+                    f"{registration.plugin}:{registration.hook} "
+                    f"({context.event.value}): {exc}"
+                )
+                results.append(
+                    HookResult(
+                        plugin=registration.plugin,
+                        hook=registration.hook,
+                        event=context.event,
+                        success=False,
+                        message=str(exc),
+                    )
+                )
+
+        return results
+
+
+def _discover_plugins(*, enabled: list[str]) -> list[HookPlugin]:
+    """Discover and load plugins from Python entry points."""
+    selected: list[HookPlugin] = []
+    enabled_set = set(enabled)
+
+    eps = entry_points(group=ENTRYPOINT_GROUP)
+    for ep in eps:
+        if ep.name not in enabled_set:
+            continue
+        selected.append(_load_plugin(ep))
+
+    missing = sorted(enabled_set - {plugin.name for plugin in selected})
+    if missing:
+        missing_str = ", ".join(missing)
+        msg = f"Configured plugin(s) not found via entry points: {missing_str}"
+        raise HookExecutionError(msg)
+
+    return selected
+
+
+def _load_plugin(ep: EntryPoint) -> HookPlugin:
+    """Load one plugin from an entry point."""
+    loaded = ep.load()
+    plugin_obj = loaded() if callable(loaded) else loaded
+
+    register_hooks = getattr(plugin_obj, "register_hooks", None)
+    if register_hooks is None or not callable(register_hooks):
+        msg = f"Plugin {ep.name!r} must expose a callable register_hooks()"
+        raise HookExecutionError(msg)
+
+    hooks = tuple(register_hooks())
+    return HookPlugin(name=ep.name, hooks=hooks)

@@ -42,6 +42,28 @@ class TestConfig:
         assert "nas01" in config.hosts
         assert config.stacks["plex"] == "nas01"
 
+    def test_plugin_defaults(self) -> None:
+        """Plugin fields default to empty collections."""
+        config = Config(
+            compose_dir=Path("/opt/compose"),
+            hosts={"nas01": Host(address="192.168.1.10")},
+            stacks={"plex": "nas01"},
+        )
+        assert config.plugins == []
+        assert config.plugin_config == {}
+
+    def test_get_plugin_config(self) -> None:
+        """Plugin-specific config can be retrieved safely."""
+        config = Config(
+            compose_dir=Path("/opt/compose"),
+            hosts={"nas01": Host(address="192.168.1.10")},
+            stacks={"plex": "nas01"},
+            plugins=["lab"],
+            plugin_config={"lab": {"mode": "fast"}},
+        )
+        assert config.get_plugin_config("lab") == {"mode": "fast"}
+        assert config.get_plugin_config("missing") == {}
+
     def test_config_invalid_stack_host(self) -> None:
         with pytest.raises(ValueError, match="unknown host"):
             Config(

@@ -35,6 +35,8 @@ class Config(BaseModel, extra="forbid"):
     glances_stack: str | None = (
         None  # Stack name for Glances (enables host resource stats in web UI)
     )
+    plugins: list[str] = Field(default_factory=list)  # Enabled lifecycle hook plugins
+    plugin_config: dict[str, dict[str, Any]] = Field(default_factory=dict)
     config_path: Path = Path()  # Set by load_config()
 
     def get_state_path(self) -> Path:
@@ -128,6 +130,10 @@ class Config(BaseModel, extra="forbid"):
     def get_web_stack(self) -> str:
         """Get web stack name from CF_WEB_STACK environment variable."""
         return os.environ.get("CF_WEB_STACK", "")
+
+    def get_plugin_config(self, plugin_name: str) -> dict[str, Any]:
+        """Return config dict for a plugin name."""
+        return self.plugin_config.get(plugin_name, {})
 
     def get_local_host_from_web_stack(self) -> str | None:
         """Resolve the local host from the web stack configuration (container only).
