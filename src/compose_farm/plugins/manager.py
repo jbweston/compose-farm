@@ -143,22 +143,17 @@ def list_available_plugins() -> list[str]:
 
 def _discover_plugins(*, enabled: list[str]) -> list[HookPlugin]:
     """Discover and load plugins from Python entry points."""
-    selected: list[HookPlugin] = []
-    enabled_set = set(enabled)
-
     eps = entry_points(group=ENTRYPOINT_GROUP)
-    for ep in eps:
-        if ep.name not in enabled_set:
-            continue
-        selected.append(_load_plugin(ep))
+    by_name: dict[str, EntryPoint] = {ep.name: ep for ep in eps}
 
-    missing = sorted(enabled_set - {plugin.name for plugin in selected})
+    missing = [name for name in enabled if name not in by_name]
     if missing:
         missing_str = ", ".join(missing)
         msg = f"Configured plugin(s) not found via entry points: {missing_str}"
         raise HookExecutionError(msg)
 
-    return selected
+    # Respect config.plugins order for deterministic hook dispatch.
+    return [_load_plugin(by_name[name]) for name in enabled]
 
 
 def _load_plugin(ep: EntryPoint) -> HookPlugin:
