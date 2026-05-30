@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import getpass
+import logging
 import os
+from importlib.metadata import entry_points
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from .paths import config_search_paths, find_config_path
 
 # Supported compose filenames, in priority order
 COMPOSE_FILENAMES = ("compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml")
+PLUGIN_CONFIG_MODEL_ENTRYPOINT_GROUP = "compose_farm.plugin_config_models"
 
 
 class Host(BaseModel, extra="forbid"):
@@ -22,6 +25,99 @@ class Host(BaseModel, extra="forbid"):
     address: str
     user: str = Field(default_factory=getpass.getuser)
     port: int = 22
+
+
+class _PluginConfigBase(BaseModel, extra="forbid"):
+    """Shared settings accepted by built-in plugins."""
+
+    policies: dict[str, Literal["blocking", "warn"]] = Field(default_factory=dict)
+
+
+class _SyncPluginConfig(_PluginConfigBase):
+    """Validation schema for plugin_config.sync."""
+
+    source_dir: str | None = None
+    events: (
+        list[
+            Literal[
+                "pre_apply",
+                "post_apply",
+                "pre_up",
+                "post_up",
+                "up_failed",
+                "pre_down",
+                "post_down",
+                "down_failed",
+                "pre_migrate",
+                "pre_stop_source",
+                "post_stop_source",
+                "pre_start_target",
+                "post_start_target",
+                "migrate_failed",
+                "rollback_started",
+                "rollback_completed",
+            ]
+        ]
+        | None
+    ) = None
+    excludes: list[str] = Field(default_factory=list)
+    delete: bool = True
+    rsync_flags: list[str] = Field(default_factory=lambda: ["-az"])
+
+
+class _CommandHooksPluginConfig(_PluginConfigBase):
+    """Validation schema for plugin_config.command-hooks."""
+
+    hooks: dict[
+        Literal[
+            "pre_apply",
+            "post_apply",
+            "pre_up",
+            "post_up",
+            "up_failed",
+            "pre_down",
+            "post_down",
+            "down_failed",
+            "pre_migrate",
+            "pre_stop_source",
+            "post_stop_source",
+            "pre_start_target",
+            "post_start_target",
+            "migrate_failed",
+            "rollback_started",
+            "rollback_completed",
+        ],
+        list[str],
+    ] = Field(default_factory=dict)
+
+
+_PLUGIN_CONFIG_MODELS: dict[str, type[_PluginConfigBase]] = {
+    "sync": _SyncPluginConfig,
+    "command-hooks": _CommandHooksPluginConfig,
+}
+
+_LOG = logging.getLogger(__name__)
+
+
+def _is_pydantic_model(value: object) -> bool:
+    """Return True when value is a Pydantic model class."""
+    return isinstance(value, type) and issubclass(value, BaseModel)
+
+
+def _discover_registered_plugin_config_models() -> dict[str, type[BaseModel]]:
+    """Discover plugin config models registered via dedicated entry points."""
+    discovered: dict[str, type[BaseModel]] = {}
+    for ep in entry_points(group=PLUGIN_CONFIG_MODEL_ENTRYPOINT_GROUP):
+        try:
+            loaded = ep.load()
+        except Exception as exc:
+            _LOG.debug("Failed to load plugin config model entry point %s: %s", ep.name, exc)
+            continue
+
+        if _is_pydantic_model(loaded):
+            discovered[ep.name] = loaded
+
+    return discovered
 
 
 class Config(BaseModel, extra="forbid"):
@@ -38,6 +134,38 @@ class Config(BaseModel, extra="forbid"):
     plugins: list[str] = Field(default_factory=list)  # Enabled lifecycle hook plugins
     plugin_config: dict[str, dict[str, Any]] = Field(default_factory=dict)
     config_path: Path = Path()  # Set by load_config()
+
+    @field_validator("plugin_config")
+    @classmethod
+    def validate_plugin_config(
+        cls, plugin_config: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        """Validate known plugin configs and normalize them to plain dicts."""
+        validated_plugin_config: dict[str, dict[str, Any]] = {}
+        schemas: dict[str, type[BaseModel]] = {
+            **_PLUGIN_CONFIG_MODELS,
+            **_discover_registered_plugin_config_models(),
+        }
+
+        for plugin_name, raw_plugin_cfg in plugin_config.items():
+            if not isinstance(raw_plugin_cfg, dict):
+                msg = f"plugin_config.{plugin_name} must be a mapping"
+                raise TypeError(msg)
+
+            schema = schemas.get(plugin_name)
+            if schema is None:
+                validated_plugin_config[plugin_name] = raw_plugin_cfg
+                continue
+
+            try:
+                parsed = schema.model_validate(raw_plugin_cfg)
+            except ValidationError as exc:
+                msg = f"Invalid plugin_config.{plugin_name}: {exc}"
+                raise ValueError(msg) from exc
+
+            validated_plugin_config[plugin_name] = parsed.model_dump(mode="json", exclude_none=True)
+
+        return validated_plugin_config
 
     def get_state_path(self) -> Path:
         """Get the state file path (stored alongside config)."""
@@ -67,6 +195,7 @@ class Config(BaseModel, extra="forbid"):
                 if host_name not in self.hosts:
                     msg = f"Stack '{stack}' references unknown host '{host_name}'"
                     raise ValueError(msg)
+
         return self
 
     def get_hosts(self, stack: str) -> list[str]:
