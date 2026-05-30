@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
+
+from compose_farm.console import console
 from compose_farm.plugins.types import (
     HookContext,
     HookEvent,
@@ -96,50 +100,72 @@ class SyncPlugin:
         rsync_flags = _rsync_flags(plugin_cfg)
         excludes = _excludes(plugin_cfg)
         delete_enabled = bool(plugin_cfg.get("delete", True))
+        show_progress = len(targets) > 1 and not context.dry_run
 
         synced: list[str] = []
-        for stack, host_name in targets:
-            source_dir = source_root / stack
-            if not source_dir.exists() or not source_dir.is_dir():
-                return HookResult(
-                    plugin=_PLUGIN_NAME,
-                    hook="sync-tree",
-                    event=context.event,
-                    success=False,
-                    message=f"stack source missing: {source_dir}",
-                )
+        progress_context = (
+            Progress(
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("{task.completed}/{task.total}"),
+                TimeElapsedColumn(),
+                transient=True,
+                console=console,
+            )
+            if show_progress
+            else nullcontext(None)
+        )
 
-            host = context.config.hosts[host_name]
-            dest_dir = str(context.config.get_stack_dir(stack))
+        with progress_context as progress:
+            task_id = progress.add_task("Syncing stacks", total=len(targets)) if progress else None
 
-            if not _ensure_destination_dir(host, dest_dir, dry_run=context.dry_run):
-                return HookResult(
-                    plugin=_PLUGIN_NAME,
-                    hook="sync-tree",
-                    event=context.event,
-                    success=False,
-                    message=f"failed to create destination dir on host {host_name}: {dest_dir}",
-                )
+            for stack, host_name in targets:
+                if progress and task_id is not None:
+                    progress.update(task_id, description=f"Syncing {stack}@{host_name}")
 
-            if not _run_rsync(
-                rsync,
-                source_dir=source_dir,
-                host=host,
-                dest_dir=dest_dir,
-                dry_run=context.dry_run,
-                delete_enabled=delete_enabled,
-                rsync_flags=rsync_flags,
-                excludes=excludes,
-            ):
-                return HookResult(
-                    plugin=_PLUGIN_NAME,
-                    hook="sync-tree",
-                    event=context.event,
-                    success=False,
-                    message=f"sync failed for {stack}@{host_name}",
-                )
+                source_dir = source_root / stack
+                if not source_dir.exists() or not source_dir.is_dir():
+                    return HookResult(
+                        plugin=_PLUGIN_NAME,
+                        hook="sync-tree",
+                        event=context.event,
+                        success=False,
+                        message=f"stack source missing: {source_dir}",
+                    )
 
-            synced.append(f"{stack}@{host_name}")
+                host = context.config.hosts[host_name]
+                dest_dir = str(context.config.get_stack_dir(stack))
+
+                if not _ensure_destination_dir(host, dest_dir, dry_run=context.dry_run):
+                    return HookResult(
+                        plugin=_PLUGIN_NAME,
+                        hook="sync-tree",
+                        event=context.event,
+                        success=False,
+                        message=f"failed to create destination dir on host {host_name}: {dest_dir}",
+                    )
+
+                if not _run_rsync(
+                    rsync,
+                    source_dir=source_dir,
+                    host=host,
+                    dest_dir=dest_dir,
+                    dry_run=context.dry_run,
+                    delete_enabled=delete_enabled,
+                    rsync_flags=rsync_flags,
+                    excludes=excludes,
+                ):
+                    return HookResult(
+                        plugin=_PLUGIN_NAME,
+                        hook="sync-tree",
+                        event=context.event,
+                        success=False,
+                        message=f"sync failed for {stack}@{host_name}",
+                    )
+
+                synced.append(f"{stack}@{host_name}")
+                if progress and task_id is not None:
+                    progress.advance(task_id)
 
         return HookResult(
             plugin=_PLUGIN_NAME,
