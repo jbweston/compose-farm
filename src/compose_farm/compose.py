@@ -21,7 +21,7 @@ _PUBLISHED_TARGET_PARTS = 2
 _HOST_PUBLISHED_PARTS = 3
 _MIN_VOLUME_PARTS = 2
 
-_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}")
+_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::[-?](.*?))?\}")
 
 
 @dataclass(frozen=True)
